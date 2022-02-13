@@ -172,6 +172,19 @@ double cudaScanThrust(int *inarray, int *end, int *resultarray) {
     return overallDuration;
 }
 
+__global__ void find_peak_kernel(int* peaks, int* data, int length) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    peaks[i] = data[i-1] < data[i] && data[i] > data[i+1] ? 1 : 0;
+}
+
+__global__ void make_list_kernel(int* peaks, int* prefixes, int* result) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (peaks[i]) {
+        int idx = prefixes[i];
+        result[idx] = i;
+    }
+}
+
 int find_peaks(int *device_input, int length, int *device_output) {
     /* TODO:
      * Finds all elements in the list that are greater than the elements before and after,
@@ -187,7 +200,27 @@ int find_peaks(int *device_input, int length, int *device_output) {
      * it requires that. However, you must ensure that the results of
      * find_peaks are correct given the original length.
      */
-    return 0;
+    const int N = nextPow2(length);
+    const int threadsPerBlock = 512;
+    const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+
+    int* peaks;
+    int* prefixes;
+    cudaMalloc(&peaks, N*sizeof(int));
+    cudaMalloc(&prefixes, N*sizeof(int));
+
+    find_peak_kernel<<<blocks, threadsPerBlock>>>(peaks, device_input, length);
+    cudaMemset(peaks, 0, sizeof(int));
+    cudaMemset(peaks + length - 1, 0, sizeof(int));
+
+    cudaScan(peaks, peaks + length, prefixes);
+
+    make_list_kernel<<<blocks, threadsPerBlock>>>(peaks, prefixes, device_output);
+
+    int ans;
+    cudaMemcpy(&ans, prefixes + length - 1, sizeof(int), cudaMemcpyDeviceToHost);
+
+    return ans;
 }
 
 /* Timing wrapper around find_peaks. You should not modify this function.
