@@ -39,6 +39,31 @@ void exclusive_scan(int *device_data, int length) {
      * both the data array is sized to accommodate the next
      * power of 2 larger than the input.
      */
+
+    // upsweep phase
+    for (int twod = 1; twod < N; twod*=2) {
+        int twod1 = twod*2;
+        /**
+        parallel_for (int i = 0; i < N; i+= twod1)
+            data[i+twod-1] += data[i+twod-1];
+        **/
+    }
+    device_data[N-1] = 0;
+
+    // downsweep phase
+
+    for (int twod = N/2; twod >= 1; twod /= 2) {
+        int twod1 = twod*2;
+        
+        /**
+        parallel_for (int i = 0; i < N;i += twod1) {
+            int t = data[i+twod-1];
+            data[i+twod-1] = data[i+twod1-1];
+            // change twod1 below to twod to reverse prefix sum
+            data[i+twod1-1] += t
+        }
+        **/
+    }
 }
 
 /* This function is a wrapper around the code you will write - it copies the
