@@ -26,6 +26,33 @@ static inline int nextPow2(int n) {
     return n;
 }
 
+
+__global__ void upsweep_kernel(int length, int twod, int twod1, int *device_data) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = index*twod1;
+    if (i < length) {
+        device_data[i+twod1-1] += device_data[i+twod-1];
+    }
+}
+
+__global__ void downsweep_kernel(int length, int twod, int twod1, int *device_data) {
+    /**
+    for (int i = 0; i < length;i += twod1) {
+        int t = device_data[i+twod-1];
+        device_data[i+twod-1] = device_data[i+twod1-1];
+        // change twod1 below to twod to reverse prefix sum
+        device_data[i+twod1-1] += t;
+    }
+    **/
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = index*twod1;
+    if (i < length) {
+        int t = device_data[i+twod-1];
+        device_data[i+twod-1] = device_data[i+twod1-1];
+        device_data[i+twod1-1] += t;
+    }
+}
+
 void exclusive_scan(int *device_data, int length) {
     /* TODO
      * Fill in this function with your exclusive scan implementation.
@@ -39,31 +66,53 @@ void exclusive_scan(int *device_data, int length) {
      * both the data array is sized to accommodate the next
      * power of 2 larger than the input.
      */
+    
+    const int threadsPerBlock = 512;
+    // const int blocks = (length + threadsPerBlock - 1) / threadsPerBlock;
+
+    length = nextPow2(length);
 
     // upsweep phase
-    for (int twod = 1; twod < N; twod*=2) {
-        int twod1 = twod*2;
-        /**
-        parallel_for (int i = 0; i < N; i+= twod1)
-            data[i+twod-1] += data[i+twod-1];
-        **/
-    }
-    device_data[N-1] = 0;
-
-    // downsweep phase
-
-    for (int twod = N/2; twod >= 1; twod /= 2) {
+    for (int twod = 1; twod < length; twod*=2) {
         int twod1 = twod*2;
         
+        // Make kernel
+        int N = length/twod1;
+        const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+
+        
+        upsweep_kernel<<<blocks, threadsPerBlock>>>(length, twod, twod1, device_data);
         /**
-        parallel_for (int i = 0; i < N;i += twod1) {
-            int t = data[i+twod-1];
-            data[i+twod-1] = data[i+twod1-1];
-            // change twod1 below to twod to reverse prefix sum
-            data[i+twod1-1] += t
-        }
+        for (int i = 0; i < length; i+= twod1)
+            device_data[i+twod1-1] += device_data[i+twod-1];
         **/
     }
+    //device_data[length-1] = 0;
+    cudaMemset(device_data+length-1, 0, sizeof(int));
+    // downsweep phase
+    //cudaMemset(device_data, 0, length*sizeof(int));
+
+    for (int twod = length/2; twod >= 1; twod /= 2) {
+        int twod1 = twod*2;
+        
+        
+        // Make kernel
+        int N = length/twod1;
+        const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+        
+        downsweep_kernel<<<blocks, threadsPerBlock>>>(length, twod, twod1, device_data);
+        /**       
+        for (int i = 0; i < length;i += twod1) {
+            int t = device_data[i+twod-1];
+            device_data[i+twod-1] = device_data[i+twod1-1];
+            // change twod1 below to twod to reverse prefix sum
+            device_data[i+twod1-1] += t;
+        }
+        **/
+       
+        
+    }
+   
 }
 
 /* This function is a wrapper around the code you will write - it copies the
