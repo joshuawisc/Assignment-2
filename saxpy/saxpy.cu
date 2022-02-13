@@ -48,14 +48,18 @@ void saxpyCuda(int N, float alpha, float *xarray, float *yarray, float *resultar
     cudaMemcpy(device_y, yarray, N*sizeof(float), cudaMemcpyHostToDevice);
     /////////////////////
 
+    double startTime2 = CycleTimer::currentSeconds();
+
     // run kernel
     saxpy_kernel<<<blocks, threadsPerBlock>>>(N, alpha, device_x, device_y, device_result);
-    cudaDeviceSynchronize();
+    cudaThreadSynchronize();
+
+    double endTime2 = CycleTimer::currentSeconds() - startTime2;
 
     //
     // TODO copy result from GPU using cudaMemcpy
     //
-    cudaMemcpy(result, device_result, N*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(resultarray, device_result, N*sizeof(float), cudaMemcpyDeviceToHost);
     /////////////////////////
 
     // end timing after result has been copied back into host memory
@@ -67,7 +71,7 @@ void saxpyCuda(int N, float alpha, float *xarray, float *yarray, float *resultar
     }
 
     double overallDuration = endTime - startTime;
-    printf("Overall: %.3f ms\t\t[%.3f GB/s]\n", 1000.f * overallDuration, toBW(totalBytes, overallDuration));
+    printf("Overall: %.3f ms\t\tKernel: %.3f ms\t\t[%.3f GB/s]\n", 1000.f * overallDuration, 1000.f * endTime2, toBW(totalBytes, overallDuration));
 
     // TODO free memory buffers on the GPU
     cudaFree(device_x);
