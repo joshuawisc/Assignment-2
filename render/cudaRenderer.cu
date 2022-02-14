@@ -465,7 +465,10 @@ __global__ void kernelRenderPixels() {
     float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                                  invHeight * (static_cast<float>(pixelY) + 0.5f));
 
-
+    
+    //TODO: 
+    // Get list
+    // Iterate over list of circles 
     for (int i = 0 ; i < cuConstRendererParams.numberOfCircles ; i++) {
         int i3 = 3 * i;
 
@@ -496,6 +499,33 @@ __global__ void kernelRenderPixels() {
         shadePixel(pixelCenterNorm, p, imgPtr, i);
 
     }
+
+}
+
+__global__ void kernelMarkBlocks() {
+    // Parallellized over blocks and circles
+    int indexX = blockIdx.x * blockDim.x + threadIdx.x;
+    //TODO:
+
+    // Mark blocks
+
+}
+
+
+__global__ void kernelScan() {
+    // Parallellized over blocks
+    //TODO:
+
+    // Scan marked lists
+
+}
+
+
+__global__ void kernelMakeLists() {
+    // Parallellized over blocks and list 
+    //TODO:
+
+    // Make list for each block
 
 }
 
@@ -592,6 +622,14 @@ void CudaRenderer::setup() {
     //
     // See the CUDA Programmer's Guide for descriptions of
     // cudaMalloc and cudaMemcpy
+
+    // TODO: Add data structures
+
+    // Marked (1-0) list per block 
+
+    // Prefix sum list?
+
+    // Final list with indices into circle array
 
     cudaMalloc(&cudaDevicePosition, sizeof(float) * 3 * numberOfCircles);
     cudaMalloc(&cudaDeviceVelocity, sizeof(float) * 3 * numberOfCircles);
@@ -701,9 +739,27 @@ void CudaRenderer::render() {
     dim3 blockDim(16, 16);
     //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
     dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
+    
+    // TODO:
+    // Clear all data structures?
 
+    // Kernel to mark blocks as intersecting
+    // Parallel over blocks and circles
+    /**
+    kernelMarkBlocks<<<>>>
+    **/
+
+    //Kernel to scan marked lists
+    // Parallel over blocks
+
+    //Kernel to make list of indices
+    // Parallel over blocks and prefix list
     
 
+    // Kernel to render pixels used data
+    /**
+    KernelRenderPixelsNew<<<>>>>   
+    **/
 
     kernelRenderPixels<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();
