@@ -312,9 +312,25 @@ __global__ void kernelAdvanceSnowflake() {
 // pixel from the circle.  Update of the image is done in this
 // function.  Called by kernelRenderCircles()
 __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imagePtr, int circleIndex) {
+    // printf("HERE1\n");
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
+
+    /**
+    // DELETE //
+    float4 newColor;
+    newColor.x = 255;
+    newColor.y = 0;
+    newColor.z = 0;
+    newColor.w = 1;
+
+
+    // Global memory write
+    *imagePtr = newColor;
+    return;
+    // DELETE //
+    **/
 
     float rad = cuConstRendererParams.radius[circleIndex];
     float maxDist = rad * rad;
@@ -322,6 +338,7 @@ __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imag
     // Circle does not contribute to the image
     if (pixelDist > maxDist)
         return;
+    // printf("HERE2\n");
 
     float3 rgb;
     float alpha;
@@ -367,7 +384,9 @@ __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imag
     newColor.w = alpha + existingColor.w;
 
     // Global memory write
+    // printf("HERE3\n");
     *imagePtr = newColor;
+    //printf("x: %f, y: %f\n", pixelCenter.x*cuConstRendererParams.imageWidth, pixelCenter.y*cuConstRendererParams.imageHeight);
 
     // END SHOULD-BE-ATOMIC REGION
 }
@@ -417,6 +436,67 @@ __global__ void kernelRenderCircles() {
             imgPtr++;
         }
     }
+}
+
+// kernelRenderPixels -- (CUDA device code)
+//
+// Each thread renders a circle.  Since there is no protection to
+// ensure order of update or mutual exclusion on the output image, the
+// resulting image will be incorrect.
+__global__ void kernelRenderPixels() {
+    int indexX = blockIdx.x * blockDim.x + threadIdx.x;
+    int indexY = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int imageWidth = cuConstRendererParams.imageWidth; 
+    int imageHeight = cuConstRendererParams.imageHeight; 
+
+    if ((indexX >= imageWidth) || (indexY >= imageHeight))
+        return;
+
+    // printf("RP2\n");
+    // Get pixelY, pixelX from index
+    int pixelY = indexY;
+    int pixelX = indexX;
+
+    // For one pixel
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+    float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+
+    for (int i = 0 ; i < cuConstRendererParams.numberOfCircles ; i++) {
+        int i3 = 3 * i;
+
+        // Read position and radius
+        float3 p = *(float3 *)(&cuConstRendererParams.position[i3]);
+        float rad = cuConstRendererParams.radius[i];
+
+        /**
+        // Compute the bounding box of the circle. The bound is in integer
+        // screen coordinates, so it's clamped to the edges of the screen.
+        short imageWidth = cuConstRendererParams.imageWidth;
+        short imageHeight = cuConstRendererParams.imageHeight;
+        short minX = static_cast<short>(imageWidth * (p.x - rad));
+        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+        short minY = static_cast<short>(imageHeight * (p.y - rad));
+        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+        // A bunch of clamps.  Is there a CUDA built-in for this?
+        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+        float invWidth = 1.f / imageWidth;
+        float invHeight = 1.f / imageHeight;
+        **/
+//        printf("RP  x: %f, y: %f\n", pixelCenterNorm.x*cuConstRendererParams.imageWidth, pixelCenterNorm.y*cuConstRendererParams.imageHeight);
+        shadePixel(pixelCenterNorm, p, imgPtr, i);
+
+    }
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -618,9 +698,13 @@ void CudaRenderer::advanceAnimation() {
 
 void CudaRenderer::render() {
     // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
+    dim3 blockDim(16, 16);
+    //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
+    dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
+    
+
+
+    kernelRenderPixels<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();
 }
