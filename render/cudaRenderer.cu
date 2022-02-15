@@ -566,7 +566,8 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     int numCircles = cuConstRendererParams.numberOfCircles;
     int circleId; //
 
-    
+
+    /**
     if (calcBlockId == 2600 && threadIdx.x == 0 && threadIdx.y == 0) {
         printf("blockId: %d\n", blockId);
         printf("calcBlockId: %d\n", calcBlockId);
@@ -580,6 +581,7 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
         
         printf("\n");
     }
+    **/
     
     
 
@@ -630,12 +632,12 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles, int numCircles)
         int blockX = blockIdx.x % gridXSize;
         int blockY = blockIdx.x / gridXSize;
 
-        //CHANGE: Normalized
+        //CHANGE: Normalized and switched top and bottom?
 
-        float boxL = (blockSize * blockX)/imageWidth;
-        float boxR = (blockSize * (blockX + 1))/imageWidth;
-        float boxT = (blockSize * blockY)/imageHeight;
-        float boxB = (blockSize * (blockY + 1))/imageHeight;
+        float boxL = (static_cast<float>(blockSize * blockX) - 0.0f)/imageWidth;
+        float boxR = (static_cast<float>(blockSize * (blockX + 1)) + 0.0f)/imageWidth;
+        float boxB = (static_cast<float>(blockSize * blockY) - 0.0f)/imageHeight;
+        float boxT = (static_cast<float>(blockSize * (blockY + 1)) + 0.0f)/imageHeight;
 
 
         //CHANGE: Changes index to threadIdx.x
@@ -702,6 +704,7 @@ __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
     //     }
     // }
     int maxIterations = (numCircles + SCAN_BLOCK_DIM - 1) / SCAN_BLOCK_DIM;
+    //maxIterations = 1;
     // Run scan on list by SCAN_BLOCK_DIM elements at a time.
     int j = 0;
     do {
@@ -737,6 +740,7 @@ __global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesL
     // int blockIndex = blockIdx.x;
     int maxIterations = (numCircles + blockDim.x - 1) / blockDim.x;
     // Run makelist on list by blockDim.x (1024) elements at a time.
+    maxIterations = 1;
     int j = 0;
     int index;
     do {
@@ -1026,7 +1030,8 @@ void CudaRenderer::render() {
     //Kernel to make list of indices
     // Parallel over blocks and prefix list
     // TODO: Change numCircles to 1024
-    blockDim = dim3(1024, 1);
+    // TODO: Change maxIterations to
+    blockDim = dim3(700, 1);
     gridDim = dim3(numBlocks);
     kernelMakeLists<<<gridDim, blockDim>>>(hitCircles, prefixes, hitCirclesList);
     cudaCheckError( cudaDeviceSynchronize() );
