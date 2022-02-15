@@ -19,6 +19,28 @@
 #include <thrust/scan.h>
 #include <thrust/device_ptr.h>
 
+#define SCAN_BLOCK_DIM  512  // needed by sharedMemExclusiveScan implementation
+#include "exclusiveScan.cu_inl"
+
+#define DEBUG
+
+#ifdef DEBUG
+#define cudaCheckError(ans) cudaAssert((ans), __FILE__, __LINE__);
+inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "CUDA Error: %s at %s:%d\n",
+        cudaGetErrorString(code), file, line);
+        if (abort) exit(code);
+    }
+}
+#else
+#define cudaCheckError(ans) ans
+#endif
+
+
+
 ////////////////////////////////////////////////////////////////////////////////////////
 // All cuda kernels here
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -522,7 +544,7 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
 
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    float3 p = *(float3 *)(&cuConstRendererParams.position[3 * threadIdx.x]);
+    float3 p = *(float3 *)(&cuConstRendererParams.position[3 * (threadIdx.x)]);
 
     int gridXSize = (imageWidth + blockSize - 1) / blockSize;
     int blockX = blockIdx.x % gridXSize;
@@ -533,18 +555,22 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
     float boxT = blockSize * blockY;
     float boxB = blockSize * (blockY + 1);
 
+
+    //CHANGE: Changes index to threadIdx.x
+
     // Mark blocks
     hitCircles[index] = circleInBox(
         p.x, p.y,
-        cuConstRendererParams.radius[index],
+        cuConstRendererParams.radius[threadIdx.x],
         boxL, boxR, boxT, boxB);
 }
 
 
+/**
 __global__ void kernelScan(int* hitCircles, int* prefixes) {
     // Parallellized over blocks
     //TODO:
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     int length = cuConstRendererParams.numberOfCircles;
 
@@ -554,6 +580,56 @@ __global__ void kernelScan(int* hitCircles, int* prefixes) {
     // thrust::exclusive_scan(hitCircles + (index*length), hitCircles + (index*(length+1)), prefixes + (index*length));
 
     // Scan marked lists
+}
+**/
+
+
+__global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = threadIdx.x;
+
+    //TODO loop over all scan blocks
+
+    __shared__ uint prefixSumInput[SCAN_BLOCK_DIM];
+    __shared__ uint prefixSumOutput[SCAN_BLOCK_DIM];
+    __shared__ uint prefixSumScratch[2 * SCAN_BLOCK_DIM];
+
+
+    // if (i == 0) {
+    //     for (int j = 0; j < SCAN_BLOCK_DIM ; j++) {
+    //         prefixSumInput[j] = 0;
+    //         prefixSumOutput[j] = 0;
+    //         prefixSumScratch[j] = 0;
+    //         prefixSumScratch[SCAN_BLOCK_DIM+j] = 0;
+
+    //     }
+    // }
+
+    // If number of circles / threads are less than block size, pad input array
+    // Could spread if needed across threads instead of only last thread
+    // Not sure if needed
+    // if (i == 0 && numCircles < SCAN_BLOCK_DIM) {
+    //     // printf("PAD");
+    //     for (int j = numCircles ; j < SCAN_BLOCK_DIM ; j++) {
+    //         prefixSumInput[j] = 0;
+    //     }
+    // }
+    int maxIterations = (numCircles + SCAN_BLOCK_DIM - 1) / SCAN_BLOCK_DIM;
+    // Run scan on list by SCAN_BLOCK_DIM elements at a time.
+    int j = 0;
+    do {
+        if (i < numCircles) {
+            prefixSumInput[threadIdx.x] = hitCircles[blockIdx.x*numCircles + i];
+        }
+        __syncthreads();
+        sharedMemExclusiveScan(threadIdx.x, prefixSumInput, prefixSumOutput, prefixSumScratch, SCAN_BLOCK_DIM);
+        __syncthreads();
+        if (i < numCircles) {
+            prefixes[blockIdx.x*numCircles + i] = prefixSumOutput[threadIdx.x];
+        }
+        i += SCAN_BLOCK_DIM;
+        j++;
+    } while (j < maxIterations);
 }
 
 
@@ -609,9 +685,9 @@ CudaRenderer::~CudaRenderer() {
     }
 
     if (cudaDevicePosition) {
-        cudaFree(hitCircles);
-        cudaFree(prefixes);
-        cudaFree(hitCirclesList);
+        cudaCheckError( cudaFree(hitCircles));
+        cudaCheckError( cudaFree(prefixes));
+        cudaCheckError( cudaFree(hitCirclesList));
         cudaFree(cudaDevicePosition);
         cudaFree(cudaDeviceVelocity);
         cudaFree(cudaDeviceColor);
@@ -680,9 +756,9 @@ void CudaRenderer::setup() {
     // Set numBlocks
     numBlocks = (image->width*image->height)/(blockSize*blockSize);    
 
-    cudaMalloc(&hitCircles, numBlocks * sizeof(int) * numberOfCircles);
-    cudaMalloc(&prefixes, numBlocks * sizeof(int) * numberOfCircles);
-    cudaMalloc(&hitCirclesList, numBlocks * sizeof(int) * numberOfCircles);
+    cudaCheckError( cudaMalloc(&hitCircles, numBlocks * sizeof(int) * numberOfCircles));
+    cudaCheckError( cudaMalloc(&prefixes, numBlocks * sizeof(int) * numberOfCircles));
+    cudaCheckError( cudaMalloc(&hitCirclesList, numBlocks * sizeof(int) * numberOfCircles));
 
     cudaMalloc(&cudaDevicePosition, sizeof(float) * 3 * numberOfCircles);
     cudaMalloc(&cudaDeviceVelocity, sizeof(float) * 3 * numberOfCircles);
@@ -800,14 +876,15 @@ void CudaRenderer::render() {
     dim3 gridDim(numBlocks);
 
     kernelMarkBlocks<<<gridDim, blockDim>>>(blockSize, hitCircles);
+    cudaCheckError( cudaDeviceSynchronize() );
 
     //Kernel to scan marked lists
     // Parallel over blocks
     // blockDim = dim3(1);
     // gridDim = dim3((numBlocks + blockDim.x - 1) / blockDim.x);
     // kernelScan<<<gridDim, blockDim>>>(hitCircles, prefixes);
-    thrust::device_ptr<int> hitC_ptr = thrust::device_pointer_cast(hitCircles);
-    thrust::device_ptr<int> prefixes_ptr = thrust::device_pointer_cast(prefixes);
+    // thrust::device_ptr<int> hitC_ptr = thrust::device_pointer_cast(hitCircles);
+    // thrust::device_ptr<int> prefixes_ptr = thrust::device_pointer_cast(prefixes);
 
     // for (int i = 0 ; i < numBlocks ; i++) {
     //     thrust::exclusive_scan(hitC_ptr + (i*numCircles), hitC_ptr + ((i+1)*numCircles), prefixes_ptr + (i*numCircles));
@@ -815,13 +892,19 @@ void CudaRenderer::render() {
     //     // thrust::exclusive_scan(hitCircles + (i*numCircles), hitCircles + ((i+1)*numCircles), prefixes + (i*numCircles));
     // }
 
+    //TODO: exclusiveScan Kernel
+    blockDim = dim3(SCAN_BLOCK_DIM, 1);
+    gridDim = dim3(numBlocks);
+    kernelScan2<<<gridDim, blockDim>>>(hitCircles, prefixes, numCircles);
+    cudaCheckError( cudaDeviceSynchronize() );
+
 
     //Kernel to make list of indices
     // Parallel over blocks and prefix list
     blockDim = dim3(numCircles, 1);
     gridDim = dim3(numBlocks);
     kernelMakeLists<<<gridDim, blockDim>>>(hitCircles, prefixes, hitCirclesList);
-    
+    cudaCheckError( cudaDeviceSynchronize() );
 
   
     // 256 threads per block is a healthy number
@@ -834,5 +917,6 @@ void CudaRenderer::render() {
     **/
 
     kernelRenderPixels<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+    cudaCheckError( cudaDeviceSynchronize() );
+    // cudaDeviceSynchronize();
 }
