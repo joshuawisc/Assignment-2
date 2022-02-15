@@ -373,7 +373,6 @@ __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imag
     // Circle does not contribute to the image
     if (pixelDist > maxDist)
         return;
-    // printf("HERE2\n");
 
     float3 rgb;
     float alpha;
@@ -419,9 +418,7 @@ __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imag
     newColor.w = alpha + existingColor.w;
 
     // Global memory write
-    // printf("HERE3\n");
     *imagePtr = newColor;
-    //printf("x: %f, y: %f\n", pixelCenter.x*cuConstRendererParams.imageWidth, pixelCenter.y*cuConstRendererParams.imageHeight);
 
     // END SHOULD-BE-ATOMIC REGION
 }
@@ -488,7 +485,6 @@ __global__ void kernelRenderPixels() {
     if ((indexX >= imageWidth) || (indexY >= imageHeight))
         return;
 
-    // printf("RP2\n");
     // Get pixelY, pixelX from index
     int pixelY = indexY;
     int pixelX = indexX;
@@ -529,18 +525,90 @@ __global__ void kernelRenderPixels() {
         float invWidth = 1.f / imageWidth;
         float invHeight = 1.f / imageHeight;
         **/
-//        printf("RP  x: %f, y: %f\n", pixelCenterNorm.x*cuConstRendererParams.imageWidth, pixelCenterNorm.y*cuConstRendererParams.imageHeight);
         shadePixel(pixelCenterNorm, p, imgPtr, i);
 
     }
 
 }
 
+__global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
+    int indexX = blockIdx.x * blockDim.x + threadIdx.x;
+    int indexY = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int imageWidth = cuConstRendererParams.imageWidth; 
+    int imageHeight = cuConstRendererParams.imageHeight; 
+
+    if ((indexX >= imageWidth) || (indexY >= imageHeight))
+        return;
+
+    // Get pixelY, pixelX from index
+    int pixelY = indexY;
+    int pixelX = indexX;
+
+    // For one pixel
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+    float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+    //TODO: 
+
+    // Get block number
+    int gridXSize = (imageWidth + blockSize - 1) / blockSize;
+    //blockId = rowNumber*width + columnNumber
+    int blockId = ((pixelY/blockSize)*gridXSize) + (pixelX/blockSize);
+
+    int calcBlockId = blockIdx.y*gridDim.x + blockIdx.x;
+
+    // Get list
+    // Iterate over list of circles 
+    int numCircles = cuConstRendererParams.numberOfCircles;
+    int circleId; //
+
+    /**
+    if (calcBlockId == 2600 && threadIdx.x == 0 && threadIdx.y == 0) {
+        printf("blockId: %d\n", blockId);
+        printf("calcBlockId: %d\n", calcBlockId);
+        printf("indexList: ");
+       
+        for (int j = 0 ; j < numCircles ; j++)
+            printf("%d,", hitCirclesList[calcBlockId*numCircles+j]);
+        
+        printf("\n");
+    }
+    **/
+    
+
+    
+    for (int i = 0 ; i < numCircles ; i++) {
+        circleId = hitCirclesList[blockId*numCircles + i];
+        if (indexX == 0 && indexY == 0) {
+            //printf("circleId %d\t", circleId);          
+        }
+        if (circleId < 0) {
+            //printf("nCircles: %d\t\t", i);
+            return;
+        }
+        int i3 = 3 * circleId;
+
+        // Read position and radius
+        float3 p = *(float3 *)(&cuConstRendererParams.position[i3]);
+
+        shadePixel(pixelCenterNorm, p, imgPtr, circleId);
+
+    }
+    
+    //printf("nCircles: N\t\t");
+
+}
+
+
 __global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
     // Parallellized over blocks and circles
     //TODO:
     float imageWidth = cuConstRendererParams.imageWidth;
-    // float imageHeight = cuConstRendererParams.imageHeight;
+    float imageHeight = cuConstRendererParams.imageHeight;
 
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -550,20 +618,23 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
     int blockX = blockIdx.x % gridXSize;
     int blockY = blockIdx.x / gridXSize;
 
-    float boxL = blockSize * blockX;
-    float boxR = blockSize * (blockX + 1);
-    float boxT = blockSize * blockY;
-    float boxB = blockSize * (blockY + 1);
+    //CHANGE: Normalized
+
+    float boxL = (blockSize * blockX)/imageWidth;
+    float boxR = (blockSize * (blockX + 1))/imageWidth;
+    float boxT = (blockSize * blockY)/imageHeight;
+    float boxB = (blockSize * (blockY + 1))/imageHeight;
 
 
     //CHANGE: Changes index to threadIdx.x
 
     // Mark blocks
-    hitCircles[index] = circleInBox(
+    hitCircles[index] = circleInBoxConservative(
         p.x, p.y,
         cuConstRendererParams.radius[threadIdx.x],
         boxL, boxR, boxT, boxB);
 }
+
 
 
 /**
@@ -585,8 +656,23 @@ __global__ void kernelScan(int* hitCircles, int* prefixes) {
 
 
 __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // int index = blockIdx.x * blockDim.x + threadIdx.x;
     int i = threadIdx.x;
+
+    /**
+    if (hitCircles[blockIdx.x*numCircles+2] == 1)
+        printf("blockID: %d\t", blockIdx.x);
+    **/
+    
+    /**
+    Hit circles seem to be marked correctly
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        for (int j = 0 ; j < numCircles ; j++)
+            printf("%d,", hitCircles[blockIdx.x*numCircles+j]);
+        printf("\n");
+    }
+    **/
+    
 
     //TODO loop over all scan blocks
 
@@ -639,14 +725,32 @@ __global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesL
     int length = cuConstRendererParams.numberOfCircles;
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int circleIndex = threadIdx.x;
-    // int blockIndex = blockIdx.x;
-    if (hitCircles[index] == 1) {
-        int idx = prefixes[index];
-        hitCirclesList[idx] = circleIndex;
+    /**
+    // Prefix list seems correct
+    if (blockIdx.x == 2646 && threadIdx.x == 0) {
+        printf("prefixList: ");
+        for (int j = 0 ; j < length ; j++)
+            printf("%d,", prefixes[blockIdx.x*length+j]);
+        printf("\n");
     }
-    if (index == length - 1) {
-        int idx = prefixes[index];
-        hitCirclesList[idx+1] = -1; 
+    **/
+    // int blockIndex = blockIdx.x;
+    int idx = prefixes[index];
+    if (hitCircles[index] == 1) {
+        hitCirclesList[blockIdx.x*blockDim.x + idx] = circleIndex;
+    }
+
+    // If last element and no of indices < no of circles
+    if (circleIndex == length - 1) {
+        if (hitCircles[index] == 1 && idx < length - 1)
+            hitCirclesList[blockIdx.x*blockDim.x + idx+1] = -1; 
+        else if (hitCircles[index] == 0)
+            hitCirclesList[blockIdx.x*blockDim.x + idx] = -1;
+        /**
+        if (blockIdx.x == 2592) {
+            printf("idx: %d, hc[idx] %d, hc[idx+1] %d\n", idx, hitCirclesList[blockIdx.x*blockDim.x + idx], hitCirclesList[blockIdx.x*blockDim.x + idx+1]);
+        }
+        **/
     }
 
     // Make list for each block
@@ -754,7 +858,12 @@ void CudaRenderer::setup() {
     // TODO: Add data structures
 
     // Set numBlocks
-    numBlocks = (image->width*image->height)/(blockSize*blockSize);    
+    // TODO: CHANGED: 
+    // numBlocks = (image->width*image->height)/(blockSize*blockSize); 
+    int blocksXSize = (image->width + blockSize - 1) / blockSize; 
+    int blocksYSize = (image->height + blockSize - 1) / blockSize; 
+
+    numBlocks = blocksXSize * blocksYSize;    
 
     cudaCheckError( cudaMalloc(&hitCircles, numBlocks * sizeof(int) * numberOfCircles));
     cudaCheckError( cudaMalloc(&prefixes, numBlocks * sizeof(int) * numberOfCircles));
@@ -911,12 +1020,16 @@ void CudaRenderer::render() {
     blockDim = dim3(16, 16);
     //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
     gridDim = dim3((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
+    // 72x72
+    //printf("dims: %d, %d\n", gridDim.x, gridDim.y);
     // Kernel to render pixels used data
     /**
     KernelRenderPixelsNew<<<>>>>   
     **/
 
-    kernelRenderPixels<<<gridDim, blockDim>>>();
+    // kernelRenderPixels<<<gridDim, blockDim>>>();
+    kernelRenderPixelsNew<<<gridDim, blockDim>>>(hitCirclesList, blockSize);
+
     cudaCheckError( cudaDeviceSynchronize() );
     // cudaDeviceSynchronize();
 }
