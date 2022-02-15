@@ -566,23 +566,26 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     int numCircles = cuConstRendererParams.numberOfCircles;
     int circleId; //
 
-    /**
+    
     if (calcBlockId == 2600 && threadIdx.x == 0 && threadIdx.y == 0) {
         printf("blockId: %d\n", blockId);
         printf("calcBlockId: %d\n", calcBlockId);
         printf("indexList: ");
        
-        for (int j = 0 ; j < numCircles ; j++)
+        for (int j = 0 ; j < numCircles ; j++) {
             printf("%d,", hitCirclesList[calcBlockId*numCircles+j]);
+            if (hitCirclesList[calcBlockId*numCircles+j] == -1)
+                break;
+        }
         
         printf("\n");
     }
-    **/
+    
     
 
     
     for (int i = 0 ; i < numCircles ; i++) {
-        circleId = hitCirclesList[blockId*numCircles + i];
+        circleId = hitCirclesList[calcBlockId*numCircles + i];
         if (indexX == 0 && indexY == 0) {
             //printf("circleId %d\t", circleId);          
         }
@@ -604,55 +607,50 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
 }
 
 
-__global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
+__global__ void kernelMarkBlocks(int blockSize, int* hitCircles, int numCircles) {
     // Parallellized over blocks and circles
     //TODO:
     float imageWidth = cuConstRendererParams.imageWidth;
     float imageHeight = cuConstRendererParams.imageHeight;
 
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    //int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int circleIdx = threadIdx.x;
 
-    float3 p = *(float3 *)(&cuConstRendererParams.position[3 * (threadIdx.x)]);
+    int maxIterations = (numCircles + blockDim.x - 1) / blockDim.x;
+    // Run mark on list by blockDim.x (1024) elements at a time.
+    int j = 0;
+    do {
 
-    int gridXSize = (imageWidth + blockSize - 1) / blockSize;
-    int blockX = blockIdx.x % gridXSize;
-    int blockY = blockIdx.x / gridXSize;
+        if (circleIdx >= numCircles)
+            break;
 
-    //CHANGE: Normalized
+        float3 p = *(float3 *)(&cuConstRendererParams.position[3 * (circleIdx)]);
 
-    float boxL = (blockSize * blockX)/imageWidth;
-    float boxR = (blockSize * (blockX + 1))/imageWidth;
-    float boxT = (blockSize * blockY)/imageHeight;
-    float boxB = (blockSize * (blockY + 1))/imageHeight;
+        int gridXSize = (imageWidth + blockSize - 1) / blockSize;
+        int blockX = blockIdx.x % gridXSize;
+        int blockY = blockIdx.x / gridXSize;
+
+        //CHANGE: Normalized
+
+        float boxL = (blockSize * blockX)/imageWidth;
+        float boxR = (blockSize * (blockX + 1))/imageWidth;
+        float boxT = (blockSize * blockY)/imageHeight;
+        float boxB = (blockSize * (blockY + 1))/imageHeight;
 
 
-    //CHANGE: Changes index to threadIdx.x
+        //CHANGE: Changes index to threadIdx.x
 
-    // Mark blocks
-    hitCircles[index] = circleInBoxConservative(
-        p.x, p.y,
-        cuConstRendererParams.radius[threadIdx.x],
-        boxL, boxR, boxT, boxB);
+        // Mark blocks
+        hitCircles[blockIdx.x*numCircles + circleIdx] = circleInBoxConservative(
+            p.x, p.y,
+            cuConstRendererParams.radius[circleIdx],
+            boxL, boxR, boxT, boxB);
+
+        circleIdx += blockDim.x;
+        j++;
+    } while (j < maxIterations);
 }
 
-
-
-/**
-__global__ void kernelScan(int* hitCircles, int* prefixes) {
-    // Parallellized over blocks
-    //TODO:
-    // int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-    int length = cuConstRendererParams.numberOfCircles;
-
-    // thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
-    // thrust::device_ptr<int> d_output = thrust::device_malloc<int>(length);
-
-    // thrust::exclusive_scan(hitCircles + (index*length), hitCircles + (index*(length+1)), prefixes + (index*length));
-
-    // Scan marked lists
-}
-**/
 
 
 __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
@@ -664,14 +662,17 @@ __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
         printf("blockID: %d\t", blockIdx.x);
     **/
     
+   
     /**
-    Hit circles seem to be marked correctly
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
+    //TODO: Hit circles don't seem to be marked correctly
+    if (blockIdx.x == 2628 && threadIdx.x == 0) {
+        printf("hitCircles: ");
         for (int j = 0 ; j < numCircles ; j++)
             printf("%d,", hitCircles[blockIdx.x*numCircles+j]);
         printf("\n");
     }
     **/
+    
     
 
     //TODO loop over all scan blocks
@@ -722,38 +723,50 @@ __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
 __global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesList) {
     // Parallellized over blocks and list 
     //TODO:
-    int length = cuConstRendererParams.numberOfCircles;
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int circleIndex = threadIdx.x;
+    int numCircles = cuConstRendererParams.numberOfCircles;
+    int circleIdx = threadIdx.x;
     /**
     // Prefix list seems correct
     if (blockIdx.x == 2646 && threadIdx.x == 0) {
         printf("prefixList: ");
-        for (int j = 0 ; j < length ; j++)
+        for (int j = 0 ; j < numCircles ; j++)
             printf("%d,", prefixes[blockIdx.x*length+j]);
         printf("\n");
     }
     **/
     // int blockIndex = blockIdx.x;
-    int idx = prefixes[index];
-    if (hitCircles[index] == 1) {
-        hitCirclesList[blockIdx.x*blockDim.x + idx] = circleIndex;
-    }
+    int maxIterations = (numCircles + blockDim.x - 1) / blockDim.x;
+    // Run makelist on list by blockDim.x (1024) elements at a time.
+    int j = 0;
+    int index;
+    do {
+        if (circleIdx >= numCircles)
+            break;
 
-    // If last element and no of indices < no of circles
-    if (circleIndex == length - 1) {
-        if (hitCircles[index] == 1 && idx < length - 1)
-            hitCirclesList[blockIdx.x*blockDim.x + idx+1] = -1; 
-        else if (hitCircles[index] == 0)
-            hitCirclesList[blockIdx.x*blockDim.x + idx] = -1;
+        index = blockIdx.x * numCircles + circleIdx;
+        int idx = prefixes[index];
+        if (hitCircles[index] == 1) {
+            hitCirclesList[blockIdx.x*numCircles + idx] = circleIdx;
+        }
+
         /**
-        if (blockIdx.x == 2592) {
-            printf("idx: %d, hc[idx] %d, hc[idx+1] %d\n", idx, hitCirclesList[blockIdx.x*blockDim.x + idx], hitCirclesList[blockIdx.x*blockDim.x + idx+1]);
+        // If last element and no of indices < no of circles
+        if (circleIndex == numCircles - 1) {
+            if (hitCircles[index] == 1 && idx < numCircles - 1)
+                hitCirclesList[blockIdx.x*blockDim.x + idx+1] = -1; 
+            else if (hitCircles[index] == 0)
+                hitCirclesList[blockIdx.x*blockDim.x + idx] = -1;
+           
+            if (blockIdx.x == 2592) {
+                printf("idx: %d, hc[idx] %d, hc[idx+1] %d\n", idx, hitCirclesList[blockIdx.x*blockDim.x + idx], hitCirclesList[blockIdx.x*blockDim.x + idx+1]);
+            }
+            
         }
         **/
-    }
 
-    // Make list for each block
+        circleIdx += blockDim.x;
+        j++;
+    } while (j < maxIterations);
 
 }
 
@@ -974,17 +987,19 @@ void CudaRenderer::advanceAnimation() {
 
 void CudaRenderer::render() {
     int numCircles = numberOfCircles;
-    
+   
+    // CHANGE: Bad fix, set all to -1;
+    cudaCheckError(cudaMemset(hitCirclesList, -1, numBlocks*numCircles*sizeof(int)))
     // TODO:
     // Clear all data structures?
     // Think? Switch blocks and circles
 
     // Kernel to mark blocks as intersecting
     // Parallel over blocks and circles
-    dim3 blockDim(numCircles, 1);
+    dim3 blockDim(1024, 1);
     dim3 gridDim(numBlocks);
-
-    kernelMarkBlocks<<<gridDim, blockDim>>>(blockSize, hitCircles);
+    printf("numCircles %d\n", numCircles);
+    kernelMarkBlocks<<<gridDim, blockDim>>>(blockSize, hitCircles, numCircles);
     cudaCheckError( cudaDeviceSynchronize() );
 
     //Kernel to scan marked lists
@@ -1010,7 +1025,8 @@ void CudaRenderer::render() {
 
     //Kernel to make list of indices
     // Parallel over blocks and prefix list
-    blockDim = dim3(numCircles, 1);
+    // TODO: Change numCircles to 1024
+    blockDim = dim3(1024, 1);
     gridDim = dim3(numBlocks);
     kernelMakeLists<<<gridDim, blockDim>>>(hitCircles, prefixes, hitCirclesList);
     cudaCheckError( cudaDeviceSynchronize() );
