@@ -15,6 +15,10 @@
 #include "sceneLoader.h"
 #include "util.h"
 
+#include "circleBoxTest.cu_inl"
+#include <thrust/scan.h>
+#include <thrust/device_ptr.h>
+
 ////////////////////////////////////////////////////////////////////////////////////////
 // All cuda kernels here
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -35,6 +39,15 @@ struct GlobalConstants {
     int imageHeight;
     float *imageData;
 };
+
+// TODO (optimization): delete prefixes and update hitCircles inplace instead
+// TODO (optimization): make hitCircles boolean to save space?
+int* hitCircles = NULL; // numBlocks arrays of size numCircles
+int* prefixes = NULL; // numBlocks arrays of size numCircles
+int* hitCirclesList = NULL; // numBlocks arrays of size circles in each block
+
+int blockSize = 16;
+int numBlocks = 0;
 
 // Global variable that is in scope, but read-only, for all CUDA
 // kernels.  The __constant__ modifier designates this variable will
@@ -474,7 +487,6 @@ __global__ void kernelRenderPixels() {
 
         // Read position and radius
         float3 p = *(float3 *)(&cuConstRendererParams.position[i3]);
-        float rad = cuConstRendererParams.radius[i];
 
         /**
         // Compute the bounding box of the circle. The bound is in integer
@@ -502,28 +514,64 @@ __global__ void kernelRenderPixels() {
 
 }
 
-__global__ void kernelMarkBlocks() {
+__global__ void kernelMarkBlocks(int blockSize, int* hitCircles) {
     // Parallellized over blocks and circles
-    int indexX = blockIdx.x * blockDim.x + threadIdx.x;
     //TODO:
+    float imageWidth = cuConstRendererParams.imageWidth;
+    // float imageHeight = cuConstRendererParams.imageHeight;
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float3 p = *(float3 *)(&cuConstRendererParams.position[3 * threadIdx.x]);
+
+    int gridXSize = (imageWidth + blockSize - 1) / blockSize;
+    int blockX = blockIdx.x % gridXSize;
+    int blockY = blockIdx.x / gridXSize;
+
+    float boxL = blockSize * blockX;
+    float boxR = blockSize * (blockX + 1);
+    float boxT = blockSize * blockY;
+    float boxB = blockSize * (blockY + 1);
 
     // Mark blocks
-
+    hitCircles[index] = circleInBox(
+        p.x, p.y,
+        cuConstRendererParams.radius[index],
+        boxL, boxR, boxT, boxB);
 }
 
 
-__global__ void kernelScan() {
+__global__ void kernelScan(int* hitCircles, int* prefixes) {
     // Parallellized over blocks
     //TODO:
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int length = cuConstRendererParams.numberOfCircles;
+
+    // thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
+    // thrust::device_ptr<int> d_output = thrust::device_malloc<int>(length);
+
+    // thrust::exclusive_scan(hitCircles + (index*length), hitCircles + (index*(length+1)), prefixes + (index*length));
 
     // Scan marked lists
-
 }
 
 
-__global__ void kernelMakeLists() {
+__global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesList) {
     // Parallellized over blocks and list 
     //TODO:
+    int length = cuConstRendererParams.numberOfCircles;
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int circleIndex = threadIdx.x;
+    // int blockIndex = blockIdx.x;
+    if (hitCircles[index] == 1) {
+        int idx = prefixes[index];
+        hitCirclesList[idx] = circleIndex;
+    }
+    if (index == length - 1) {
+        int idx = prefixes[index];
+        hitCirclesList[idx+1] = -1; 
+    }
 
     // Make list for each block
 
@@ -545,6 +593,7 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
+
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -560,6 +609,9 @@ CudaRenderer::~CudaRenderer() {
     }
 
     if (cudaDevicePosition) {
+        cudaFree(hitCircles);
+        cudaFree(prefixes);
+        cudaFree(hitCirclesList);
         cudaFree(cudaDevicePosition);
         cudaFree(cudaDeviceVelocity);
         cudaFree(cudaDeviceColor);
@@ -625,11 +677,12 @@ void CudaRenderer::setup() {
 
     // TODO: Add data structures
 
-    // Marked (1-0) list per block 
+    // Set numBlocks
+    numBlocks = (image->width*image->height)/(blockSize*blockSize);    
 
-    // Prefix sum list?
-
-    // Final list with indices into circle array
+    cudaMalloc(&hitCircles, numBlocks * sizeof(int) * numberOfCircles);
+    cudaMalloc(&prefixes, numBlocks * sizeof(int) * numberOfCircles);
+    cudaMalloc(&hitCirclesList, numBlocks * sizeof(int) * numberOfCircles);
 
     cudaMalloc(&cudaDevicePosition, sizeof(float) * 3 * numberOfCircles);
     cudaMalloc(&cudaDeviceVelocity, sizeof(float) * 3 * numberOfCircles);
@@ -735,27 +788,46 @@ void CudaRenderer::advanceAnimation() {
 }
 
 void CudaRenderer::render() {
-    // 256 threads per block is a healthy number
-    dim3 blockDim(16, 16);
-    //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
-    dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
+    int numCircles = numberOfCircles;
     
     // TODO:
     // Clear all data structures?
+    // Think? Switch blocks and circles
 
     // Kernel to mark blocks as intersecting
     // Parallel over blocks and circles
-    /**
-    kernelMarkBlocks<<<>>>
-    **/
+    dim3 blockDim(numCircles, 1);
+    dim3 gridDim(numBlocks);
+
+    kernelMarkBlocks<<<gridDim, blockDim>>>(blockSize, hitCircles);
 
     //Kernel to scan marked lists
     // Parallel over blocks
+    // blockDim = dim3(1);
+    // gridDim = dim3((numBlocks + blockDim.x - 1) / blockDim.x);
+    // kernelScan<<<gridDim, blockDim>>>(hitCircles, prefixes);
+    thrust::device_ptr<int> hitC_ptr = thrust::device_pointer_cast(hitCircles);
+    thrust::device_ptr<int> prefixes_ptr = thrust::device_pointer_cast(prefixes);
+
+    // for (int i = 0 ; i < numBlocks ; i++) {
+    //     thrust::exclusive_scan(hitC_ptr + (i*numCircles), hitC_ptr + ((i+1)*numCircles), prefixes_ptr + (i*numCircles));
+
+    //     // thrust::exclusive_scan(hitCircles + (i*numCircles), hitCircles + ((i+1)*numCircles), prefixes + (i*numCircles));
+    // }
+
 
     //Kernel to make list of indices
     // Parallel over blocks and prefix list
+    blockDim = dim3(numCircles, 1);
+    gridDim = dim3(numBlocks);
+    kernelMakeLists<<<gridDim, blockDim>>>(hitCircles, prefixes, hitCirclesList);
     
 
+  
+    // 256 threads per block is a healthy number
+    blockDim = dim3(16, 16);
+    //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
+    gridDim = dim3((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
     // Kernel to render pixels used data
     /**
     KernelRenderPixelsNew<<<>>>>   
