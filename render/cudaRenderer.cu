@@ -68,7 +68,7 @@ int* hitCircles = NULL; // numBlocks arrays of size numCircles
 int* prefixes = NULL; // numBlocks arrays of size numCircles
 int* hitCirclesList = NULL; // numBlocks arrays of size circles in each block
 
-int blockSize = 32;
+int blockSize = 64;
 int numBlocks = 0;
 
 // Global variable that is in scope, but read-only, for all CUDA
@@ -560,12 +560,14 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     int blockId = ((pixelY/blockSize)*gridXSize) + (pixelX/blockSize);
 
     int calcBlockId = blockIdx.y*gridDim.x + blockIdx.x;
+    calcBlockId = blockId;
 
     // Get list
     // Iterate over list of circles 
     int numCircles = cuConstRendererParams.numberOfCircles;
     int circleId; //
 
+    /**
     if (pixelY == 539 && pixelX == 641)
         printf("BlockID: %d\n", calcBlockId);
 
@@ -584,6 +586,7 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
         
         printf("\n");
     }
+    **/
     
     
     
@@ -1051,7 +1054,9 @@ void CudaRenderer::render() {
 
   
     // 256 threads per block is a healthy number
-    blockDim = dim3(32, 32);
+    int threadBlockSize = blockSize;
+    threadBlockSize = 32;
+    blockDim = dim3(threadBlockSize, threadBlockSize);
     //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
     gridDim = dim3((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
     // 72x72
