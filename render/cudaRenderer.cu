@@ -68,7 +68,7 @@ int* hitCircles = NULL; // numBlocks arrays of size numCircles
 int* prefixes = NULL; // numBlocks arrays of size numCircles
 int* hitCirclesList = NULL; // numBlocks arrays of size circles in each block
 
-int blockSize = 16;
+int blockSize = 32;
 int numBlocks = 0;
 
 // Global variable that is in scope, but read-only, for all CUDA
@@ -765,20 +765,21 @@ __global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesL
             hitCirclesList[blockIdx.x*numCircles + idx] = circleIdx;
         }
 
-        /**
+        
         // If last element and no of indices < no of circles
-        if (circleIndex == numCircles - 1) {
+        if (circleIdx == numCircles - 1) {
             if (hitCircles[index] == 1 && idx < numCircles - 1)
-                hitCirclesList[blockIdx.x*blockDim.x + idx+1] = -1; 
+                hitCirclesList[blockIdx.x*numCircles + idx+1] = -1; 
             else if (hitCircles[index] == 0)
-                hitCirclesList[blockIdx.x*blockDim.x + idx] = -1;
-           
+                hitCirclesList[blockIdx.x*numCircles + idx] = -1;
+            /**
             if (blockIdx.x == 2592) {
                 printf("idx: %d, hc[idx] %d, hc[idx+1] %d\n", idx, hitCirclesList[blockIdx.x*blockDim.x + idx], hitCirclesList[blockIdx.x*blockDim.x + idx+1]);
             }
+            **/
             
         }
-        **/
+        
 
         circleIdx += blockDim.x;
         j++;
@@ -1005,7 +1006,7 @@ void CudaRenderer::render() {
     int numCircles = numberOfCircles;
    
     // CHANGE: Bad fix, set all to -1;
-    cudaCheckError(cudaMemset(hitCirclesList, -1, numBlocks*numCircles*sizeof(int)))
+    // cudaCheckError(cudaMemset(hitCirclesList, -1, numBlocks*numCircles*sizeof(int)))
     // TODO:
     // Clear all data structures?
     // Think? Switch blocks and circles
@@ -1050,7 +1051,7 @@ void CudaRenderer::render() {
 
   
     // 256 threads per block is a healthy number
-    blockDim = dim3(16, 16);
+    blockDim = dim3(32, 32);
     //dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
     gridDim = dim3((image->width + blockDim.x - 1) / blockDim.x, (image->height + blockDim.y - 1) / blockDim.y);
     // 72x72
