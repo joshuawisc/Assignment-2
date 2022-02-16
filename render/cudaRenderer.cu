@@ -594,9 +594,9 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     
     for (int i = 0 ; i < numCircles ; i++) {
         circleId = hitCirclesList[calcBlockId*numCircles + i];
-        if (indexX == 0 && indexY == 0) {
-            //printf("circleId %d\t", circleId);          
-        }
+        // if (indexX == 0 && indexY == 0) {
+        //     //printf("circleId %d\t", circleId);          
+        // }
         if (circleId < 0) {
             //printf("nCircles: %d\t\t", i);
             return;
@@ -612,6 +612,118 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     
     //printf("nCircles: N\t\t");
 
+}
+
+__global__ void kernelRenderPixelsLocal(int* hitCirclesList, int blockSize) {
+    int indexX = blockIdx.x * blockDim.x + threadIdx.x;
+    int indexY = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int imageWidth = cuConstRendererParams.imageWidth; 
+    int imageHeight = cuConstRendererParams.imageHeight; 
+
+    if ((indexX >= imageWidth) || (indexY >= imageHeight))
+        return;
+
+    // Get pixelY, pixelX from index
+    int pixelY = indexY;
+    int pixelX = indexX;
+
+    // For one pixel
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+    float4 *imagePtr = (float4 *)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+    float2 pixelCenter = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+    //TODO: 
+
+    // Get block number
+    int gridXSize = (imageWidth + blockSize - 1) / blockSize;
+    //blockId = rowNumber*width + columnNumber
+    int blockId = ((pixelY/blockSize)*gridXSize) + (pixelX/blockSize);
+
+    int calcBlockId = blockIdx.y*gridDim.x + blockIdx.x;
+    calcBlockId = blockId;
+
+    // Get list
+    // Iterate over list of circles 
+    int numCircles = cuConstRendererParams.numberOfCircles;
+    int circleIndex; //
+
+    float4 existingColor = *imagePtr;
+    float4 newColor;
+    for (int i = 0 ; i < numCircles ; i++) {
+        circleIndex = hitCirclesList[calcBlockId*numCircles + i];
+        // if (indexX == 0 && indexY == 0) {
+        //     //printf("circleId %d\t", circleId);          
+        // }
+        if (circleIndex < 0) {
+            //printf("nCircles: %d\t\t", i);
+            break;
+        }
+        int i3 = 3 * circleIndex;
+
+        // Read position and radius
+        float3 p = *(float3 *)(&cuConstRendererParams.position[i3]);
+
+
+        // shadePixel(pixelCenter, p, &localPtr, circleIndex);
+        {
+            float diffX = p.x - pixelCenter.x;
+            float diffY = p.y - pixelCenter.y;
+            float pixelDist = diffX * diffX + diffY * diffY;
+
+            float rad = cuConstRendererParams.radius[circleIndex];
+            float maxDist = rad * rad;
+
+            // Circle does not contribute to the image
+            if (pixelDist > maxDist)
+                continue;
+
+            float3 rgb;
+            float alpha;
+
+            // There is a non-zero contribution.  Now compute the shading value
+
+            // Suggestion: This conditional is in the inner loop.  Although it
+            // will evaluate the same for all threads, there is overhead in
+            // setting up the lane masks, etc., to implement the conditional.  It
+            // would be wise to perform this logic outside of the loops in
+            // kernelRenderCircles.  (If feeling good about yourself, you
+            // could use some specialized template magic).
+            if (cuConstRendererParams.sceneName == SNOWFLAKES ||
+                cuConstRendererParams.sceneName == SNOWFLAKES_SINGLE_FRAME) {
+
+                const float kCircleMaxAlpha = .5f;
+                const float falloffScale = 4.f;
+
+                float normPixelDist = sqrt(pixelDist) / rad;
+                rgb = lookupColor(normPixelDist);
+
+                float maxAlpha = .6f + .4f * (1.f - p.z);
+                maxAlpha = kCircleMaxAlpha * fmaxf(fminf(maxAlpha, 1.f), 0.f); // kCircleMaxAlpha * clamped value
+                alpha = maxAlpha * exp(-1.f * falloffScale * normPixelDist * normPixelDist);
+
+            } else {
+                // Simple: each circle has an assigned color
+                int index3 = 3 * circleIndex;
+                rgb = *(float3 *)&(cuConstRendererParams.color[index3]);
+                alpha = .5f;
+            }
+
+            float oneMinusAlpha = 1.f - alpha;
+
+
+            newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
+            newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
+            newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
+            newColor.w = alpha + existingColor.w;
+
+            // Local memory write
+            existingColor = newColor;
+        }
+    }
+    *imagePtr = newColor;
 }
 
 
@@ -649,7 +761,7 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles, int numCircles)
         //CHANGE: Changes index to threadIdx.x
 
         // Mark blocks
-        hitCircles[blockIdx.x*numCircles + circleIdx] = circleInBoxConservative(
+        hitCircles[blockIdx.x*numCircles + circleIdx] = circleInBox(
             p.x, p.y,
             cuConstRendererParams.radius[circleIdx],
             boxL, boxR, boxT, boxB);
@@ -1067,7 +1179,7 @@ void CudaRenderer::render() {
     **/
 
     // kernelRenderPixels<<<gridDim, blockDim>>>();
-    kernelRenderPixelsNew<<<gridDim, blockDim>>>(hitCirclesList, blockSize);
+    kernelRenderPixelsLocal<<<gridDim, blockDim>>>(hitCirclesList, blockSize);
 
     cudaCheckError( cudaDeviceSynchronize() );
     // cudaDeviceSynchronize();
