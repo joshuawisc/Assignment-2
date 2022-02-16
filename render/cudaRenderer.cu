@@ -19,7 +19,7 @@
 #include <thrust/scan.h>
 #include <thrust/device_ptr.h>
 
-#define SCAN_BLOCK_DIM  512  // needed by sharedMemExclusiveScan implementation
+#define SCAN_BLOCK_DIM  1024  // needed by sharedMemExclusiveScan implementation
 #include "exclusiveScan.cu_inl"
 
 #define DEBUG
@@ -566,9 +566,12 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
     int numCircles = cuConstRendererParams.numberOfCircles;
     int circleId; //
 
+    if (pixelY == 539 && pixelX == 641)
+        printf("BlockID: %d\n", calcBlockId);
 
-    /**
-    if (calcBlockId == 2600 && threadIdx.x == 0 && threadIdx.y == 0) {
+
+    
+    if (pixelY == 550 && pixelX == 528) {
         printf("blockId: %d\n", blockId);
         printf("calcBlockId: %d\n", calcBlockId);
         printf("indexList: ");
@@ -581,7 +584,7 @@ __global__ void kernelRenderPixelsNew(int* hitCirclesList, int blockSize) {
         
         printf("\n");
     }
-    **/
+    
     
     
 
@@ -634,10 +637,10 @@ __global__ void kernelMarkBlocks(int blockSize, int* hitCircles, int numCircles)
 
         //CHANGE: Normalized and switched top and bottom?
 
-        float boxL = (static_cast<float>(blockSize * blockX) - 0.0f)/imageWidth;
-        float boxR = (static_cast<float>(blockSize * (blockX + 1)) + 0.0f)/imageWidth;
-        float boxB = (static_cast<float>(blockSize * blockY) - 0.0f)/imageHeight;
-        float boxT = (static_cast<float>(blockSize * (blockY + 1)) + 0.0f)/imageHeight;
+        float boxL = (static_cast<float>(blockSize * blockX) + 0.5f)/imageWidth;
+        float boxR = (static_cast<float>(blockSize * (blockX + 1)) + 0.5f)/imageWidth;
+        float boxB = (static_cast<float>(blockSize * blockY) + 0.5f)/imageHeight;
+        float boxT = (static_cast<float>(blockSize * (blockY + 1)) + 0.5f)/imageHeight;
 
 
         //CHANGE: Changes index to threadIdx.x
@@ -707,6 +710,7 @@ __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
     //maxIterations = 1;
     // Run scan on list by SCAN_BLOCK_DIM elements at a time.
     int j = 0;
+    int add;
     do {
         if (i < numCircles) {
             prefixSumInput[threadIdx.x] = hitCircles[blockIdx.x*numCircles + i];
@@ -715,7 +719,15 @@ __global__ void kernelScan2(int* hitCircles, int* prefixes, int numCircles) {
         sharedMemExclusiveScan(threadIdx.x, prefixSumInput, prefixSumOutput, prefixSumScratch, SCAN_BLOCK_DIM);
         __syncthreads();
         if (i < numCircles) {
+            // prefix = currrent prefix output + final output of previous sum
             prefixes[blockIdx.x*numCircles + i] = prefixSumOutput[threadIdx.x];
+            if (j >= 1) {
+                add = prefixes[(blockIdx.x*numCircles) + ((j*SCAN_BLOCK_DIM)-1)];
+                add = add >= 0 ? add : 0 ;
+                if (hitCircles[(blockIdx.x*numCircles) + ((j*SCAN_BLOCK_DIM)-1)] == 1)
+                    add += 1;
+                prefixes[blockIdx.x*numCircles + i] += add;
+            }
         }
         i += SCAN_BLOCK_DIM;
         j++;
@@ -740,7 +752,7 @@ __global__ void kernelMakeLists(int* hitCircles, int* prefixes, int* hitCirclesL
     // int blockIndex = blockIdx.x;
     int maxIterations = (numCircles + blockDim.x - 1) / blockDim.x;
     // Run makelist on list by blockDim.x (1024) elements at a time.
-    maxIterations = 1;
+    // maxIterations = 1;
     int j = 0;
     int index;
     do {
@@ -1002,7 +1014,7 @@ void CudaRenderer::render() {
     // Parallel over blocks and circles
     dim3 blockDim(1024, 1);
     dim3 gridDim(numBlocks);
-    printf("numCircles %d\n", numCircles);
+    // printf("numCircles %d\n", numCircles);
     kernelMarkBlocks<<<gridDim, blockDim>>>(blockSize, hitCircles, numCircles);
     cudaCheckError( cudaDeviceSynchronize() );
 
@@ -1031,7 +1043,7 @@ void CudaRenderer::render() {
     // Parallel over blocks and prefix list
     // TODO: Change numCircles to 1024
     // TODO: Change maxIterations to
-    blockDim = dim3(700, 1);
+    blockDim = dim3(1024, 1);
     gridDim = dim3(numBlocks);
     kernelMakeLists<<<gridDim, blockDim>>>(hitCircles, prefixes, hitCirclesList);
     cudaCheckError( cudaDeviceSynchronize() );
